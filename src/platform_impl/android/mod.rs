@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use android_activity::input::{InputEvent, KeyAction, Keycode, MotionAction};
+use android_activity::input::{Axis, InputEvent, KeyAction, Keycode, MotionAction};
 use android_activity::{
     AndroidApp, AndroidAppWaker, ConfigurationRef, InputStatus, MainEvent, Rect,
 };
@@ -33,6 +33,23 @@ pub(crate) use crate::cursor::{
 pub(crate) use crate::icon::NoIcon as PlatformIcon;
 
 static HAS_FOCUS: AtomicBool = AtomicBool::new(true);
+
+/// The axes a gamepad reports: both sticks (Z/RZ or RX/RY for the right one, depending on the
+/// device), the analog triggers (LTRIGGER/RTRIGGER or BRAKE/GAS) and the hat d-pad.
+const JOYSTICK_AXES: [Axis; 12] = [
+    Axis::X,
+    Axis::Y,
+    Axis::Z,
+    Axis::Rz,
+    Axis::Rx,
+    Axis::Ry,
+    Axis::Ltrigger,
+    Axis::Rtrigger,
+    Axis::Brake,
+    Axis::Gas,
+    Axis::HatX,
+    Axis::HatY,
+];
 
 /// Returns the minimum `Option<Duration>`, taking into account that `None`
 /// equates to an infinite timeout, not a zero timeout (so can't just use
@@ -376,6 +393,25 @@ impl<T: 'static> EventLoop<T> {
             InputEvent::MotionEvent(motion_event) => {
                 let window_id = window::WindowId(WindowId);
                 let device_id = event::DeviceId(DeviceId(motion_event.device_id()));
+
+                // Gamepad / joystick motion (sticks, analog triggers, hat d-pad) is not a touch:
+                // report every axis as `AxisMotion`, with the `AMOTION_EVENT_AXIS_*` value as the
+                // axis id. Only the latest sample matters for a stick, so history is skipped.
+                if motion_event.source().is_joystick_class() {
+                    let pointer = motion_event.pointer_at_index(0);
+                    for axis in JOYSTICK_AXES {
+                        let event = event::Event::WindowEvent {
+                            window_id,
+                            event: event::WindowEvent::AxisMotion {
+                                device_id,
+                                axis: u32::from(axis),
+                                value: pointer.axis_value(axis) as f64,
+                            },
+                        };
+                        callback(event, self.window_target());
+                    }
+                    return input_status;
+                }
 
                 let phase = match motion_event.action() {
                     MotionAction::Down | MotionAction::PointerDown => {
